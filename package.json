@@ -1,0 +1,25 @@
+{
+    "name": "cvrai",
+    "version": "0.0.1",
+    "description": "Example agent, please change",
+    "main": "main.js",
+    "openiap": {
+        "daemon": false,
+        "chromium": false,
+        "language": "nodejs",
+        "typescript": false
+    },
+    "scripts": {
+        "updateapi": "npm uninstall @openiap/nodeapi && npm i @openiap/nodeapi"
+    },
+    "dependencies": {
+        "@openiap/nodeapi": "^0.0.31",
+        "@tensorflow/tfjs-node": "^4.15.0",
+        "asciichart": "^1.5.25",
+        "csv-parser": "^3.0.0",
+        "csv-write-stream": "^2.0.0",
+        "exceljs": "^4.4.0",
+        "mongodb": "^6.3.0",
+        "parse-csv-stream": "^2.0.2"
+    }
+}
