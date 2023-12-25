@@ -24,35 +24,50 @@ const db = cli.db("demo2");
 
 
 const layers = 6; // 50;
-const layerunits = 108; // 50;
+const layerunits = 50; // 50;
 
-const epochs = 210;
+const epochs = 250;
+// const batchesPerEpoch = 32;
 const batchesPerEpoch = 16;
 const years = 10;
-async function getModel(restart = false) {
+const dropoutRate = 0.2; 
+async function getModel() {
     let model;
+    let restart = fs.existsSync('cvr-model/model.json') ? false : true;
     if (restart == true) {
         model = tf.sequential();
         // model.add(tf.layers.flatten({ inputShape: [9, featureNames.length] }));
-        model.add(tf.layers.lstm({ units: layerunits, returnSequences: true, inputShape: [9, featureNames.length] }));
-        model.add(tf.layers.lstm({ units: layerunits }));
-        // for (let i = 0; i < layers; i++) {
+        model.add(tf.layers.lstm({ dropout: dropoutRate, units: layerunits, returnSequences: false, inputShape: [9, featureNames.length] }));
+        // model.add(tf.layers.lstm({ dropout: dropoutRate, units: layerunits, returnSequences: true, inputShape: [9, featureNames.length] }));
+        // model.add(tf.layers.lstm({ 
+        //     units: layerunits,
+        //     returnSequences: false,
+        //     dropout: dropoutRate
+        // }));
+        model.add(tf.layers.dense({ 
+            units: layerunits, 
+            useBias: true, 
+            activation: "relu" 
+        })); 
+
+        // model.add(tf.layers.lstm({ units: layerunits }));
+        //for (let i = 0; i < layers; i++) {
         //     // slowly decreate units from layerunits to featureNames.length
         //     let units = Math.floor(layerunits - (layerunits - featureNames.length) * (i / layers));
 
         //     // model.add(tf.layers.dense({ units, activation: "relu" })); 
-        //     model.add(tf.layers.dense({ units: layerunits * 2, activation: "relu" })); 
+        //model.add(tf.layers.dense({ units: layerunits, useBias: true, activation: "tanh" })); 
         //     // sigmoid - create posebilities for each output
         //     // softmax - create posebility with only one outcome
         //     // relu - 
-        // }
+        //}
         model.add(tf.layers.dense({ units: featureNames.length }));
     } else {
         model = await tf.loadLayersModel('file://./cvr-model/model.json');
     }
 
     // const optimizer = tf.train.adam(0.001);
-    const optimizer = tf.train.adam();
+    const optimizer = tf.train.adam(0.0005);
     // const optimizer = tf.train.sgd(0.001);
     // const optimizer = tf.train.adamax(0.001);
     // const optimizer = tf.train.rmsprop(0.005);
@@ -83,7 +98,7 @@ let subloss = [];
 let subacc = [];
 let submse = [];
 
-async function train_batched(restart) {
+async function train_batched() {
     var config1 = {
         height: 20,
         colors: [
@@ -101,13 +116,14 @@ async function train_batched(restart) {
             asciichart.cyan,
         ]
     }
-    let model = await getModel(restart);
+    let model = await getModel();
     // @ts-ignore
     const ds = tf.data.generator(batchGenerator);
+
     await model.fitDataset(ds, { epochs, batchesPerEpoch, verbose: 0,
-        validationData: ds,
-        validationBatchSize: batchesPerEpoch,
-        validationBatches: 5,
+        // validationData: ds,
+        // validationBatchSize: batchesPerEpoch,
+        // validationBatches: 5,
         callbacks: {
         onBatchBegin(batch, logs) {
         },
@@ -123,7 +139,8 @@ async function train_batched(restart) {
             if (submse.length >= maxLength) submse.shift ()
             try {
                 console.clear();
-                console.log (asciichart.plot ([subloss, subacc, loss, acc], config1));
+                // console.log (asciichart.plot ([subloss, subacc, loss, acc], config1));
+                console.log (asciichart.plot ([subacc, acc], config1));
 
                 // @ts-ignore
                 process.stdout.write (`\x1b[31m loss \x1b[0m${logs.loss.toString().padEnd(20, " ")}`)
@@ -175,8 +192,64 @@ function imputeNullValues(data, defaultValue = 0) {
         return value === null ? defaultValue : value;
     });
 }
+/**
+ * 
+ * @param {*} financial 
+ * @returns {number[]}
+ */
+function objToFeatureArray(financial) {
+    let result = [];
+    featureNames.map((feature, index) => {
+        if(Array.isArray(financial)) {
+            result.push(financial[index]);
+        } if(financial[feature] == null) {
+            result.push(0);
+        } else {
+            result.push(financial[feature]);
+        }
+    });
+    return result;
+}
+function FeatureArrayToObj(financial) {
+    let result = {};
+    featureNames.map((feature, index) => {
+        result[feature] = financial[index];
+    });
+    return result;
+}
+function AverageObj(column) {
+    var arr = objToFeatureArray(column);
+    const max = Math.max(...arr);
+    const min = Math.min(...arr);
+    return FeatureArrayToObj(arr.map(val => (val - min) / (max - min)));
+}
+function AverageArray(column) {
+    var arr = column;
+    const max = Math.max(...arr);
+    const min = Math.min(...arr);
+    return arr.map(val => (val - min) / (max - min));
+}
+function calculateAverageForMissingYear(data) {
+    let sums = new Array(12).fill(0);
+    let counts = new Array(12).fill(0);
 
-function flatternCompanyData(companyData) {
+    // Summing up and counting non-missing values for each of the 12 entries
+    data.forEach(row => {
+        row.forEach((value, index) => {
+            if (value !== 0) { // Assuming '0' indicates missing data
+                sums[index] += value;
+                counts[index]++;
+            }
+        });
+    });
+
+    // Calculating average for each entry
+    let averages = sums.map((sum, index) => counts[index] > 0 ? sum / counts[index] : 0);
+
+    return averages;
+}
+
+function flatternCompanyData(companyData, fill) {
     companyData.forEach(company => {
         company.financial.forEach((yearData, index) => {
             const res = company.financial[index];
@@ -210,28 +283,29 @@ function flatternCompanyData(companyData) {
         });
 
         let financials = company.financial;
-        let count = financials.length;
-        if (financials.length < 10) {
-            let missing = 10 - financials.length;
-            for (var y = 0; y < missing; y++) {
-                const End = new Date(financials[0].End);
-                const name = financials[0].End.toISOString().substring(0, 10);
-                End.setDate(End.getDate() - 365);
-                var obj = {name};
-                featureNames.map(name => obj[name] = 0);
-                obj.End = End;
-                financials.unshift(obj);             
-                // financials.unshift(featureNames.map(name => 0));
+        if(fill == true) {
+            if (financials.length < 10) {
+                let missing = 10 - financials.length;
+                for (var y = 0; y < missing; y++) {
+
+                    const End = new Date(financials[0].End);
+                    const name = financials[0].End.toISOString().substring(0, 10);
+                    End.setDate(End.getDate() - 365);
+                    var obj = AverageObj(financials[0]);
+                    obj.name = name;
+                    // var obj = {name};
+                    // featureNames.map(name => obj[name] = 0);
+                    obj.End = End;
+                    financials.unshift(obj);             
+                    // financials.unshift(featureNames.map(name => 0));
+                }
+            } else if (financials.length > 10) {
+                // financials.sort((a, b) => a.End - b.End);
+                // grab the last 10 years
+                financials = financials.slice(financials.length - 10, financials.length);            
             }
-        } else if (financials.length > 10) {
-            // financials.sort((a, b) => a.End - b.End);
-            // grab the last 10 years
-            financials = financials.slice(financials.length - 10, financials.length);            
         }
         company.financial = financials;
-        if(financials.length != 10) {
-            debugger;
-        }
     });
 }
 /**
@@ -239,7 +313,7 @@ function flatternCompanyData(companyData) {
  * @param data {any[]} data 
  * @returns {any} {x: number[][][], y: number[][],}
  */
-function normalizeData(data) {
+function normalizeData_old(data) {
     // Find min and max for each feature
     let minValues = new Array(featureNames.length).fill(Infinity);
     let maxValues = new Array(featureNames.length).fill(-Infinity);
@@ -297,6 +371,36 @@ function normalizeData(data) {
  
     return {x: xres, y: yres, minValues, maxValues};
 }
+function normalizeData(data) {
+    /**
+     * @type {number[][][]}
+     */
+    var xres = [];
+    /**
+     * @type {number[][]}
+     */
+    var yres = [];
+    for (var i = 0; i < data.length; i++) {
+        let financials = data[i];
+        if (financials.length < 10) {
+            let missing = 10 - financials.length;
+            for (var y = 0; y < missing; y++) {
+                financials.unshift(featureNames.map(name => 0));
+            }
+        } else if (financials.length > 10) {
+            financials = financials.slice(0, 10);
+        }
+        var last = financials[financials.length - 1];
+        financials = financials.slice(0, financials.length - 1);
+        xres.push(financials);
+        yres.push(last);
+
+    }
+    xres = xres.map(companyData => companyData.map(yearData => imputeNullValues(yearData)));
+    yres = yres.map(yearData => imputeNullValues(yearData));
+ 
+    return {x: xres, y: yres};
+}
 function denormalizeData(normalizedData, minValues, maxValues) {
     return normalizedData.map((companyData, idx) => {
         var result = {}
@@ -332,7 +436,7 @@ async function dataGenerator_old() {
                         }
                     }
                 } while (dataBatch.length < batchesPerEpoch);
-                flatternCompanyData(dataBatch);
+                flatternCompanyData(dataBatch, true);
                 for(let i = 0; i < dataBatch.length; i++) {
                     const row = dataBatch[i];
                     row["financial"].map(x=> {
@@ -422,7 +526,7 @@ async function* dataGenerator() {
                     }
                     data.push(row);
                 } while (dataBatch.length < batchesPerEpoch);
-                flatternCompanyData(dataBatch);
+                flatternCompanyData(dataBatch, false);
                 for(let i = 0; i < dataBatch.length; i++) {
                     const row = dataBatch[i];
                     row["financial"].map(x=> {
@@ -498,14 +602,24 @@ async function dumpdata() {
                     }
                     data.push(row);
                 } while (dataBatch.length < batchesPerEpoch);
-                flatternCompanyData(dataBatch);
+                flatternCompanyData(dataBatch, false);
                 for(let i = 0; i < dataBatch.length; i++) {
                     const row = dataBatch[i];
                     row["financial"].map(x=> {
                         var cvr = {...x};
+
                         cvr.cvr = row.cvr;
                         cvr.enhedsNummer = row.enhedsNummer;
-                        writer.write(cvr);
+
+                        var arr = objToFeatureArray(x);
+                        const max = Math.max(...arr);
+                        const min = Math.min(...arr);
+                        if(max == 0 && min == 0) {
+                            // skip
+                            var b = true;
+                        } else {
+                            writer.write(cvr);
+                        }
                     });
                     
                 }
@@ -574,21 +688,24 @@ async function* getRows2() {
 }
 
 const parse = require('csv-parser');
+const { error } = require("console");
 async function* getRows() {
-    const batchSize = 10;
+    // const batchSize = 10;
     let currentBatch = [];
     
     try {
       const stream = fs.createReadStream('financial.csv').pipe(parse(headers));
-      
+      var lastcvr = null;
       for await (const row of stream) {
         if(row.cvr == null || row.cvr == "cvr") continue;
-        currentBatch.push(row);
-        
-        if (currentBatch.length === batchSize) {
-          yield currentBatch;
-          currentBatch = [];
+        if(lastcvr != row.cvr) {
+            if (currentBatch.length > 0) {
+                yield currentBatch;
+                currentBatch = [];
+            }
+            lastcvr = row.cvr;
         }
+        currentBatch.push(row);        
       }
       
       if (currentBatch.length > 0) {
@@ -600,8 +717,8 @@ async function* getRows() {
   }
 
   
-  async function train(restart) {
-    let model = await getModel(restart);
+  async function train() {
+    let model = await getModel();
 
     const rowsGenerator = getRows();
     let index = 0;
@@ -679,30 +796,44 @@ async function* batchGenerator() {
             });
             rows.push(arr);
         });
+        if(rows.length < 2) continue;
 
         // Split the data into x and y
-        const x = rows.splice(0, rows.length - 1);
+        let x = rows.splice(0, rows.length - 1);
         const y = rows.splice(rows.length - 1, 1);
+        if(x.length < 9) {
+            var count = 9 - x.length;
+            for (var i = 0; i < count; i++) {
+                var norm = calculateAverageForMissingYear(x);
+                if(norm.length != 12) {
+                    throw new error("norm.length != 12 !!!!!");
+                }
+                x.unshift(norm);
+            }
+            // console.log("Missing " + count + " years, but now at ", x.length);
+        } else if (x.length > 9) {
+            x = x.slice(x.length - 9, x.length);
+        }
 
         // Normalize x
-        const _xs = tf.tensor2d(x);
-        const xmin = _xs.min(0);
-        const xmax = _xs.max(0);
-        const epsilon = 1e-7; // A small constant
-        const range = xmax.sub(xmin).add(epsilon);
-        const xs = _xs.sub(xmin).div(range);
+        const xs = tf.tensor2d(x);
+        // const xmin = _xs.min(0);
+        // const xmax = _xs.max(0);
+        // const epsilon = 1e-7; // A small constant
+        // const range = xmax.sub(xmin).add(epsilon);
+        // const xs = _xs.sub(xmin).div(range);
 
         // Normalize y
-        const _ys = tf.tensor1d(y[0]);
-        const ymin = _ys.min(0);
-        const ymax = _ys.max(0);
-        const yRange = ymax.sub(ymin).add(epsilon);
-        const ys = _ys.sub(ymin).div(yRange);
+        const ys = tf.tensor1d(y[0]);
+        // const ymin = _ys.min(0);
+        // const ymax = _ys.max(0);
+        // const yRange = ymax.sub(ymin).add(epsilon);
+        // const ys = _ys.sub(ymin).div(yRange);
 
         // Accumulate batch data
         batchX.push(xs.arraySync());
         batchY.push(ys.arraySync());
-
+        
         // Check if the batch is complete
         if (batchX.length === batchesPerEpoch) {
             // @ts-ignore
@@ -720,8 +851,8 @@ async function* batchGenerator() {
 }
 
 
-async function predict(model, companyData) {
-    flatternCompanyData([companyData]);
+async function predict_old(model, companyData) {
+    flatternCompanyData([companyData], true);
     // const x = companyData.financial.splice(0, companyData.financial.length - 1);
     const x = companyData.financial.slice(0, 9);
     x.map((row, index) => {
@@ -757,9 +888,51 @@ async function predict(model, companyData) {
     denormalizedPredictions[0].name = denormalizedPredictions[0].End.toISOString().substring(0, 10);
     denormalizedPredictions[0].End.setDate(denormalizedPredictions[0].End.getDate() + 365);
     companyData.financial.push(denormalizedPredictions[0]);
+    this.predictData = companyData.financial;
+    
 }
-async function train2222(restart) {
-    let model = await getModel(restart);
+async function predict(model, companyData) {
+    // flatternCompanyData([companyData]);
+    // get last 9 entries from companyData.financial
+    const x = companyData.financial.slice(companyData.financial.length - 9, companyData.financial.length);
+    x.map((row, index) => {
+        var arr = [];
+        featureNames.map(name => {
+            arr.push(row[name]);
+        });
+        x[index] = arr;
+    });
+
+    const xs = tf.tensor2d(x);
+    const batched_xs = xs.reshape([1, 9, 12]); 
+
+    const predictions = model.predict(batched_xs);
+    let predictionsArray;
+    if (Array.isArray(predictions)) {
+        // If predictions is an array of tensors, convert each tensor to an array
+        predictionsArray = await Promise.all(predictions.map(tensor => tensor.array()));
+    } else {
+        // If predictions is a single tensor, convert it to an array
+        predictionsArray = await predictions.array();
+    }
+    const denormalizedPredictions = predictionsArray;
+    denormalizedPredictions[0].End = new Date(companyData.financial[companyData.financial.length - 1].End);
+    denormalizedPredictions[0].name = denormalizedPredictions[0].End.toISOString().substring(0, 10);
+    denormalizedPredictions[0].End.setDate(denormalizedPredictions[0].End.getDate() + 365);
+    var obj = {};
+    featureNames.map((feature, index) => {
+        obj[feature] = denormalizedPredictions[0][index];
+    });
+    obj.End = new Date(companyData.financial[companyData.financial.length - 1].End);
+    obj.name = obj.End.toISOString().substring(0, 10);
+    obj.End.setDate(obj.End.getDate() + 365);
+    companyData.financial.push(obj);
+    // companyData.financial.push(denormalizedPredictions[0]);
+    this.predictData = companyData.financial;
+    
+}
+async function train2222() {
+    let model = await getModel();
 
     const rowsGenerator = getRows();
     for await (const _rows of rowsGenerator) {
@@ -821,6 +994,9 @@ async function predict_old(model, companyData) {
     companyData.financial.push(denormalizedPredictions[0]);
 }
 function dumpDinancials(data) {
+
+
+
     var result = data;
     if(result.financial) result = result.financial;
     let Egenkapital = [];
@@ -828,21 +1004,29 @@ function dumpDinancials(data) {
     result = result.map((value) => {
         var res = {};
         ["name", ...featureNamestest].map((feature, index) => {
-            if(feature == "name") {
-                res[feature] = value[feature];
-            } else {
-                res[feature] = parseInt(value[feature]);
-                if(feature == "Egenkapital") {
-                    Egenkapital.push(res[feature]);
-                }
-                if(feature == "profitLoss") {
-                    profitLoss.push(res[feature]);
-                }
-            }            
+            try {
+                if(feature == "name") {
+                    res[feature] = value[feature];
+                } else {
+                    res[feature] = value[feature];
+                    if(res[feature] == null) {
+                        res[feature] = value[index]
+                    }
+                    if(feature == "Egenkapital") {
+                        Egenkapital.push(res[feature]);
+                    }
+                    if(feature == "profitLoss") {
+                        profitLoss.push(res[feature]);
+                    }
+                }            
+            } catch (error) {
+                throw error;                
+            }
         });
         return res;
     });
-    // console.table(result);
+    console.table(result);
+    return;
     var config = {
         height: 15,
         colors: [
@@ -869,15 +1053,14 @@ async function testModel(cvrNumber) {
     companyData["financial"] = await db.collection("cvrfinancial").find({"enhedsNummer": companyData.enhedsNummer} ).project({"report": 1, "End": 1, "start": 1, }).toArray();
 
     // companyData.financial.pop();
-    flatternCompanyData([companyData]);
+    flatternCompanyData([companyData], true);
     // dumpDinancials(companyData);
-    const model = await getModel(false);
+    const model = await getModel();
 
     let financials = companyData.financial;
 
-    for(var i = 0; i < 30; i++) {
+    for(var i = 0; i < 2; i++) {
         await predict(model, companyData);
-        financials.push(companyData.financial[companyData.financial.length - 1]);
         dumpDinancials(financials);
         await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -888,12 +1071,12 @@ async function testModel(cvrNumber) {
 const featureNamestest = ['employeeExpenses','grossProfitLoss','profitLoss','profitLossBeforeTax','Egenkapital'];
 
 async function main() {
-    // // // // // // // await dumpdata(); // Begin - Batch 8784 of 55664 - MongoCursorExhaustedError: Cursor is exhausted
+    // // // // // await dumpdata(); // Begin - Batch 8784 of 55664 - MongoCursorExhaustedError: Cursor is exhausted
 
-    await train_batched(false);
+    await train_batched();
 
     // await train(true);
-    // var result = await testModel(39461455);
+    // var result = await testModel(394 61455);
     // var result = await testModel(33152973); // b2bpresales
     // var result = await testModel(40400230); // openiap
     var result = await testModel(38725963); // velsmurt
